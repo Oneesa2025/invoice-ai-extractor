@@ -1,21 +1,26 @@
 import os
 import re
 import json
+import pdfplumber
 from transformers import pipeline
 
 
-# Load model
-print("⏳ Loading local AI model...")
+# Load local AI model
+print("⏳ Loading AI model...")
 extractor = pipeline("text2text-generation", model="google/flan-t5-base")
 print("✅ Model loaded")
 
 
-def read_invoice(path):
-    with open(path, "r") as f:
-        return f.read()
+# -------- PDF READER --------
+def read_pdf(path):
+    text = ""
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() + "\n"
+    return text
 
 
-# Rule-based extractor (always works for simple invoices)
+# -------- RULE EXTRACTION --------
 def rule_extract(text):
 
     data = {
@@ -28,7 +33,7 @@ def rule_extract(text):
     }
 
     patterns = {
-        "invoice_number": r"invoice\s*no\s*[:\-]?\s*(\S+)",
+        "invoice_number": r"invoice\s*(no|number)?\s*[:\-]?\s*(\S+)",
         "date": r"date\s*[:\-]?\s*(.+)",
         "seller": r"seller\s*[:\-]?\s*(.+)",
         "buyer": r"buyer\s*[:\-]?\s*(.+)",
@@ -39,16 +44,19 @@ def rule_extract(text):
     for key, pattern in patterns.items():
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            data[key] = match.group(1).strip()
+            if key == "invoice_number":
+                data[key] = match.group(2).strip()
+            else:
+                data[key] = match.group(1).strip()
 
     return data
 
 
-# AI extractor (backup)
+# -------- AI EXTRACTION (Backup) --------
 def ai_extract(text):
 
     prompt = f"""
-Extract invoice info and write like this:
+Extract invoice information:
 
 Invoice Number:
 Date:
@@ -65,7 +73,6 @@ Invoice:
     return result[0]["generated_text"]
 
 
-# Parse AI output
 def parse_ai(text):
 
     data = {
@@ -95,44 +102,35 @@ def parse_ai(text):
 
 
 def merge_data(rule, ai):
-
     final = {}
-
     for key in rule:
-        if rule[key]:
-            final[key] = rule[key]
-        else:
-            final[key] = ai[key]
-
+        final[key] = rule[key] if rule[key] else ai[key]
     return final
 
 
+# -------- MAIN --------
 def main():
 
     input_folder = "../input"
     output_folder = "../output"
 
-    files = os.listdir(input_folder)
+    files = [f for f in os.listdir(input_folder) if f.endswith(".pdf")]
 
     if not files:
-        print("❌ No invoice found")
+        print("❌ No PDF invoice found")
         return
 
     path = os.path.join(input_folder, files[0])
 
-    text = read_invoice(path)
+    print("📄 Reading PDF invoice...")
+    text = read_pdf(path)
 
-    print("📄 Reading invoice...")
-
-    # Step 1: Rule-based
     rule_data = rule_extract(text)
 
-    # Step 2: AI backup
     print("🤖 Running AI backup...")
     ai_raw = ai_extract(text)
     ai_data = parse_ai(ai_raw)
 
-    # Step 3: Merge
     final_data = merge_data(rule_data, ai_data)
 
     output_path = os.path.join(output_folder, "result_ai.json")
@@ -140,8 +138,7 @@ def main():
     with open(output_path, "w") as f:
         json.dump(final_data, f, indent=4)
 
-    print("✅ Final Output Saved")
-    print("\n📊 Result:")
+    print("✅ Extraction Complete")
     print(json.dumps(final_data, indent=4))
 
 
